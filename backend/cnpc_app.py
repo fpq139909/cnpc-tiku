@@ -830,7 +830,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    server = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     url = f"http://0.0.0.0:{PORT}/"
     print(f"党建云题目提取工具已启动：{url}")
     print("（此窗口保持打开；关闭窗口即停止服务）")
