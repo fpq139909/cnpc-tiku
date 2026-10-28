@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>党建云题库 · 手机端管理</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --acc:#2563eb; --ok:#16a34a; --warn:#f59e0b; --err:#ef4444; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:#e2e8f0; padding:16px; max-width:560px; margin:0 auto; }
+  h1 { font-size:20px; margin:8px 0 4px; }
+  .sub { color:#94a3b8; font-size:13px; margin-bottom:16px; line-height:1.5; }
+  .card { background:var(--card); border-radius:14px; padding:14px; margin-bottom:14px; }
+  label { display:block; font-size:13px; color:#cbd5e1; margin:10px 0 6px; }
+  input { width:100%; padding:12px; border-radius:10px; border:1px solid #334155; background:#0f172a;
+          color:#e2e8f0; font-size:15px; }
+  input:focus { outline:none; border-color:var(--acc); }
+  .btns { display:flex; gap:10px; margin-top:14px; }
+  button { flex:1; padding:14px; border:none; border-radius:12px; font-size:15px; font-weight:600; color:#fff;
+           background:var(--acc); active:transform:scale(.98); }
+  button.sec { background:#475569; }
+  button:disabled { opacity:.5; }
+  #status { margin-top:12px; font-size:13px; min-height:20px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .err { color:var(--err); }
+  pre { background:#0f172a; border-radius:10px; padding:12px; font-size:12px; color:#a5f3fc; overflow:auto;
+        max-height:340px; white-space:pre-wrap; word-break:break-all; }
+  .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #334155; font-size:14px; }
+  .row:last-child { border-bottom:none; }
+  .tag { padding:2px 8px; border-radius:6px; font-size:12px; }
+  .t-ok { background:rgba(22,163,74,.2); color:var(--ok); }
+  .t-no { background:rgba(239,68,68,.2); color:var(--err); }
+  .t-push { background:rgba(37,99,235,.2); color:#60a5fa; }
+  a { color:#60a5fa; }
+  .hint { margin-top:10px; font-size:12px; color:#94a3b8; line-height:1.6; background:#0f172a; border-radius:10px; padding:10px; }
+  .hint code { color:#a5f3fc; }
+</style>
+</head>
+<body>
+  <h1>党建云题库 · 手机端管理</h1>
+  <div class="sub">填好下面两项（自动记住），点按钮即可把题库同步到手机端链接。<br>
+    后端地址是阿里云函数计算地址；rx_token 从先锋党建 App 复制（见下）。</div>
+
+  <div class="card">
+    <label>后端地址（阿里云函数计算 HTTP 地址）</label>
+    <input id="worker" placeholder="https://xxxx.cn-hangzhou.fcapp.run" inputmode="url">
+    <label>rx_token（先锋党建会话令牌）</label>
+    <input id="token" placeholder="从 App 题目详情页网址 rx_token= 后面复制" autocapitalize="off" spellcheck="false">
+    <div class="hint">📱 如何获取 rx_token：打开先锋党建 App → 进入任意题目「详细页」→ 点右上角「…」或用浏览器打开该页 → 复制网址里 <code>rx_token=</code> 后面那一串，粘贴到上面。令牌过期后重新复制一次即可（登录态失效才会过期）。</div>
+    <div class="btns">
+      <button id="btn-check">🔍 检测打钩状态</button>
+      <button id="btn-sync" class="sec">🔄 强制更新题库</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="result" style="display:none;">
+    <div id="result-body"></div>
+    <details style="margin-top:10px;">
+      <summary style="color:#94a3b8;font-size:12px;">查看原始返回</summary>
+      <pre id="raw"></pre>
+    </details>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+const workerEl = $('#worker'), tokenEl = $('#token');
+workerEl.value = localStorage.getItem('cnpc_worker') || 'https://cnpc-tiku-fn-ttwmhprenq.cn-hangzhou.fcapp.run';
+tokenEl.value = localStorage.getItem('cnpc_token') || '';
+workerEl.addEventListener('input', () => localStorage.setItem('cnpc_worker', workerEl.value.trim()));
+tokenEl.addEventListener('input', () => localStorage.setItem('cnpc_token', tokenEl.value.trim()));
+
+function setStatus(msg, cls){ const s = $('#status'); s.textContent = msg; s.className = cls || ''; }
+
+async function callApi(action){
+  const base = workerEl.value.trim().replace(/\/+$/, '');
+  const rx = tokenEl.value.trim();
+  if (!base) { setStatus('请先填写后端地址', 'err'); return; }
+  try { const u = new URL(base); if(u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) throw new Error(); }
+  catch(e){ setStatus('请填写正确的 HTTPS 后端地址', 'err'); return; }
+  if (!rx) { setStatus('请填写 rx_token', 'err'); return; }
+  setStatus('处理中…');
+  $('#btn-check').disabled = $('#btn-sync').disabled = true;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  try {
+    const r = await fetch(base, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ rxToken: rx, action }), signal: controller.signal
+    });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    $('#btn-check').disabled = $('#btn-sync').disabled = false;
+    if (!data.ok) { setStatus('失败：' + (data.error || '未知错误'), 'err'); $('#result').style.display='none'; return; }
+    render(data);
+    const sync = data.result || data.sync;
+    const syncFailed = sync && ['month','proj','xxyd'].some(k => !sync[k] || !sync[k].ok);
+    const checkFailed = data.checks && Object.values(data.checks).some(v => v.error || v.checked == null || (v.push && !v.push.ok) || v.pushError);
+    setStatus(syncFailed || checkFailed || data.complete === false ? '部分操作失败，请查看下方原因；已保留原题库' : '✅ 已完成（题库页正在自动刷新）', syncFailed || checkFailed || data.complete === false ? 'err' : 'ok');
+  } catch(e){
+    $('#btn-check').disabled = $('#btn-sync').disabled = false;
+    setStatus(e.name === 'AbortError' ? '等待超时，结果尚未确认，请先刷新题库查看，不要连续重复同步' : '请求失败：' + e.message + '（检查后端地址/网络）', 'err');
+  } finally {
+    clearTimeout(timer);
+    $('#btn-check').disabled = $('#btn-sync').disabled = false;
+  }
+}
+
+function render(data){
+  $('#result').style.display = 'block';
+  $('#raw').textContent = JSON.stringify(data, (k,v) => typeof v === 'string' ? v.replace(/(rx_token=)[^&\s]+/ig,'$1[已隐藏]') : v, 2);
+  const body = $('#result-body');
+  body.innerHTML = '';
+  if (data.checks){
+    for (const [k, v] of Object.entries(data.checks)){
+      const div = document.createElement('div'); div.className = 'row';
+      const name = {month:'月月学', proj:'项目学习', xxyd:'学习用典'}[k] || k;
+      let badge = v.error || v.checked == null ? '<span class="tag t-no">检测失败</span>' : v.checked ? '<span class="tag t-ok">已打钩</span>' : '<span class="tag t-no">未打钩</span>';
+      if (!v.checked && v.push){
+        badge += v.push.ok ? ' <span class="tag t-push">已同步题库</span>'
+                           : ' <span class="tag t-no">同步失败</span>';
+      }
+      div.innerHTML = `<span></span><span>${badge}</span>`;
+      div.firstElementChild.textContent = name + ' · ' + (v.label || '');
+      body.appendChild(div);
+      if (v.error || v.pushError || (!v.checked && v.push && !v.push.ok)){
+        const d2 = document.createElement('div'); d2.style.cssText='font-size:12px;color:#fca5a5;padding:2px 0 8px;';
+        d2.textContent = '↳ ' + (v.error || v.pushError || v.push.msg); body.appendChild(d2);
+      }
+    }
+  }
+  if (data.result || data.sync){
+    for (const [k, v] of Object.entries(data.result || data.sync)){
+      const div = document.createElement('div'); div.className = 'row';
+      const name = {month:'月月学', proj:'项目学习', xxyd:'学习用典'}[k] || k;
+      const badge = v.ok ? '<span class="tag t-push">已同步题库</span>' : '<span class="tag t-no">失败</span>';
+      div.innerHTML = `<span>${name}</span><span>${badge}</span>`;
+      body.appendChild(div);
+      if (!v.ok){
+        const d2 = document.createElement('div'); d2.style.cssText='font-size:12px;color:#fca5a5;padding:2px 0 8px;';
+        d2.textContent = '↳ ' + (v.msg || v.error || '同步失败'); body.appendChild(d2);
+      }
+    }
+  }
+}
+
+$('#btn-check').addEventListener('click', () => callApi('check'));
+$('#btn-sync').addEventListener('click', () => callApi('sync'));
+</script>
+</body>
+</html>
