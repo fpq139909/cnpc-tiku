@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>题库文本</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f4f6f9; color: #1f2329; min-height: 100vh; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 60px; }
+  .top { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .back { color: #2f6fed; text-decoration: none; font-size: 15px; }
+  h1 { font-size: 20px; flex: 1; }
+  #copy { background: #d4001e; color: #fff; border: none; border-radius: 10px;
+          padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  #copy:active { opacity: .85; }
+  .status { font-size: 13px; min-height: 20px; margin: 10px 0; color: #2a9d4a; }
+  .status.err { color: #d93636; }
+  pre.content { background: #fff; border: 1px solid #e6e9ef; border-radius: 12px; padding: 18px;
+          white-space: pre-wrap; word-break: break-word; font-size: 15px; line-height: 1.9;
+          font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <a class="back" href="index.html">← 返回</a>
+    <h1 id="title">题库</h1>
+    <button id="copy">📋 复制本页文本</button>
+  </div>
+  <div id="status" class="status"></div>
+  <pre id="content" class="content">加载中…</pre>
+</div>
+<script>
+const FILE = {month:'yyx.txt',proj:'xmxx.txt',xxyd:'xxyd.txt'};
+const NAME = {month:'月月学',proj:'项目学习',xxyd:'学习用典'};
+const GH = {owner:'fpq139909',repo:'cnpc-tiku',branch:'main',subdir:'tiku'};
+const DEFAULT_BACKEND='https://cnpc-tiku-fn-ttwmhprenq.cn-hangzhou.fcapp.run';
+const params=new URLSearchParams(location.search);
+const sub=params.get('sub')||'month',fname=FILE[sub];
+const contentEl=document.getElementById('content'),statusEl=document.getElementById('status'),copyBtn=document.getElementById('copy');
+document.getElementById('title').textContent=NAME[sub]||'题库';
+let rawText='',pollTimer=null,inFlight=false,hasFresh=false;
+function setStatus(msg,cls){statusEl.textContent=msg;statusEl.className='status'+(cls?' '+cls:'');}
+function validText(text){
+  if(typeof text!=='string'||!text.trim()||/^\s*</.test(text))return false;
+  const count=text.match(/^题量：(\d+) 题/m);
+  return /题库/.test(text.split('\n')[0])&&count&&Number(count[1])>0
+    &&(text.match(/^\d+\. 【/gm)||[]).length===Number(count[1])
+    &&(text.match(/^答案：/gm)||[]).length===Number(count[1]);
+}
+async function fetchTimed(url,kind='text'){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+  try{
+    const r=await fetch(url,{cache:'no-store',signal:controller.signal});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    return await (kind==='json'?r.json():r.text());
+  }finally{clearTimeout(timer);}
+}
+function backend(){
+  try{
+    const value=localStorage.getItem('cnpc_worker')||DEFAULT_BACKEND,u=new URL(value);
+    if(u.protocol==='https:'&&!u.username&&!u.password)return u.href.replace(/\/+$/,'');
+  }catch(e){}
+  return DEFAULT_BACKEND;
+}
+async function readLatest(){
+  const stamp=Date.now();
+  try{
+    const d=await fetchTimed(backend()+'/api/tiku?sub='+encodeURIComponent(sub)+'&_='+stamp,'json');
+    if(!d.ok||d.subject!==sub||!validText(d.text))throw new Error('后端题库校验失败');
+    if(d.sha256&&globalThis.crypto&&crypto.subtle){
+      const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(d.text));
+      const actual=Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
+      if(actual!==d.sha256)throw new Error('题库哈希不一致');
+    }
+    return {text:d.text,fresh:true};
+  }catch(e){}
+  try{
+    const url='https://raw.githubusercontent.com/'+GH.owner+'/'+GH.repo+'/'+GH.branch+'/'+GH.subdir+'/'+fname+'?_='+stamp;
+    const text=await fetchTimed(url);
+    if(!validText(text))throw new Error('题库内容校验失败');
+    return {text,fresh:true};
+  }catch(e){}
+  // 已取得直连版本后，网络故障时保留该版本，避免旧 CDN 内容覆盖它。
+  if(hasFresh)throw new Error('直连暂不可用，保留已加载版本，正在重试');
+  try{
+    const text=await fetchTimed('https://cdn.jsdelivr.net/gh/'+GH.owner+'/'+GH.repo+'@'+GH.branch+'/'+GH.subdir+'/'+fname+'?_='+stamp);
+    if(!validText(text))throw new Error('CDN 内容校验失败');
+    return {text,fresh:false,message:'（已加载 CDN 缓存版本，正在重试最新内容）'};
+  }catch(e){}
+  const text=await fetchTimed('./'+fname+'?_='+stamp);
+  if(!validText(text))throw new Error('本地题库内容校验失败');
+  return {text,fresh:false,message:'（已加载本地缓存版本，正在重试最新内容）'};
+}
+function show(result){
+  rawText=result.text;contentEl.textContent=result.text;
+  hasFresh=hasFresh||result.fresh;
+  setStatus(result.message||'',result.fresh?'':'err');
+}
+function startPoll(){
+  if(pollTimer!==null||!fname)return;
+  pollTimer=setTimeout(()=>{pollTimer=null;load();},15000);
+}
+async function load(){
+  if(!fname){contentEl.textContent='';setStatus('未知科目，请返回重新选择','err');return;}
+  if(inFlight)return;
+  if(pollTimer!==null){clearTimeout(pollTimer);pollTimer=null;}
+  if(document.visibilityState==='hidden'){startPoll();return;}
+  inFlight=true;
+  try{show(await readLatest());}
+  catch(e){
+    if(!rawText)contentEl.textContent='';
+    setStatus(rawText?'网络暂不可用，保留已加载题库，正在重试':'加载失败，正在重试（请检查网络）','err');
+  }finally{inFlight=false;startPoll();}
+}
+load();
+window.addEventListener('online',()=>load());
+window.addEventListener('pageshow',()=>load());
+window.addEventListener('storage',e=>{if(e.key==='cnpc_worker')load();});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')load();});
+copyBtn.addEventListener('click',async()=>{
+  if(!rawText){setStatus('没有可复制的内容','err');return;}
+  try{await navigator.clipboard.writeText(rawText);setStatus('✓ 已复制本页文本');}
+  catch(e){
+    const ta=document.createElement('textarea');ta.value=rawText;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{if(!document.execCommand('copy'))throw new Error('copy failed');setStatus('✓ 已复制本页文本');}
+    catch(e2){setStatus('复制失败，请手动长按选择文本','err');}
+    finally{document.body.removeChild(ta);}
+  }
+});
+</script>
+</body>
+</html>
